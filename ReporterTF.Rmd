@@ -1,0 +1,205 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(xlsx)
+library(gplots)
+library(ggpubr)
+library(ggbiplot)
+library(corrplot)
+library(grid)
+library(gridExtra)
+library(readxl)
+library(EnhancedVolcano)
+library(ggVennDiagram)
+library(RColorBrewer)
+library(clusterProfiler)
+library(pheatmap)
+library(DESeq2)
+library(grid)
+library(ggh4x)
+library(ggpolypath)
+library(ggplot2)
+library(venn)
+library(piano)
+library(snowfall)
+library(snow)
+library(qdapTools)
+library(openxlsx)
+```
+# Piano enrichment
+```{r}
+# Extract DEG for each comparison
+work_dir_deg = read_excel('/Users/hasanalanya/Desktop/MSc-Thesis/Main-Paper/Supplementary/Supplementary-2.xlsx') # define the directory where have your results of differential analysis
+#extract genes in each clusters in two cohorts, respectively.
+workdir_cluster = '/Users/hasanalanya/Desktop/MSc-Thesis/HypergeometricTest/Jamaica/Clusters/' # define the directory where have your results of clusters
+res_dir = '/Users/hasanalanya/Desktop/MSc-Thesis/Main-Paper/ReporterTF/' # define the directory where will save your results
+
+gsc <- loadGSC("/Users/hasanalanya/Desktop/ReporterTF/trrust_rawdata.human.gmt", type="gmt")
+
+ClusterGenes <- function(cluster){
+  clusters <- read.table(paste0(workdir_cluster,'/JamaicaCluster_',cluster,'.txt'), header = F, sep = "\t")
+  map_inform<-as.matrix(read.csv("/Users/hasanalanya/Desktop/CoexpressionNetwork/scripts/mart_export.txt",header=T,sep="\t"))
+  rownames(map_inform)<-map_inform[,1]
+  over_ensg<-as.matrix(intersect(clusters$V1,map_inform[,1]))
+  result<-unlist(as.data.frame(map_inform[over_ensg,2]) )
+  genesCluster <- as.character(result) 
+  
+  over_ensg<-as.matrix(intersect(work_dir_deg$Gene,map_inform[,1]))
+  result<-as.data.frame(map_inform[over_ensg,2])
+  colnames(result) <- "GeneName"
+  result$ID = rownames(result)
+  temp1 = merge(result, work_dir_deg, by.x = "ID",by.y = "Gene", all.x = TRUE)
+  
+  temp = temp1 %>% mutate(new_pvalue = case_when((GeneName %in% genesCluster) ~ pval_sarc, TRUE ~ 1))
+  
+  temp = temp[!duplicated(temp$GeneName),]
+  rownames(temp) = temp$GeneName
+  write.table(temp, paste0(res_dir,'deseq','_JamaicaCluster_',cluster,".txt"), sep = "\t", quote = F, row.names = F)
+      # Piano analysis
+      # check the standard to define up or down
+  pval <- as.matrix(temp$new_pvalue)
+  log2fc <- as.matrix(temp$coef_sarc)
+  rownames(pval) <- rownames(log2fc) <- rownames(temp)
+      
+  log2fc[is.na(log2fc)] <- 0
+  pval[is.na(pval)] <- 1
+  gsaRes <- runGSA(pval,log2fc,gsc=gsc, geneSetStat="reporter", signifMethod="nullDist", nPerm=1000)
+  res_piano=GSAsummaryTable(gsaRes)
+  res_piano$rownames=rownames(res_piano)
+  write.table(res_piano, paste0(res_dir,'piano','_JamaicaCluster_',cluster,".txt"), sep = "\t", quote = F, row.names = F)
+}
+clusters_all <- c("1","2","3","8","10","29","139")
+
+for(i in 1:length(clusters_all)){
+  temp = clusters_all[i]
+  ClusterGenes(temp)
+}
+
+```
+# Summary the results
+```{r}
+# Extracting results from TF enrichment analysis.
+work_dir = '/Users/hasanalanya/Desktop/MSc-Thesis/Main-Paper/ReporterTF/' # define the directory where have your results of piano
+
+extractRes_TF <- function(cluster){
+  content = read.table(paste0(work_dir,"piano_JamaicaCluster_",cluster,'.txt'), header = T, sep = "\t")
+  # dist.dir.up
+  temp1 = content %>% filter(`p.adj..dist.dir.up.` < 0.05)
+  if(length(temp1$Name) > 0){
+    temp1$group = "1"
+  }else{
+    print(paste0("NO reporter TF found in dist.dir.up!"))
+  }
+  # dist.dir.down
+  temp2 = content %>% filter(`p.adj..dist.dir.dn.` < 0.05)
+  if(length(temp2$Name) > 0){
+    temp2$group = "1"
+  }else{
+    print(paste0("NO reporter TF found in dist.dir.dn!"))
+  }
+  # no.dir
+  temp3 = content %>% filter(`p.adj..non.dir..` < 0.05)
+  if(length(temp3$Name) > 0){
+    temp3$group = "1"
+  }else{
+    print(paste0("NO reporter TF found in no.dir!"))
+  }
+  return(list(temp1,temp2,temp3))
+}
+
+
+TRN <- read_tsv('/Users/hasanalanya/Desktop/ReporterTF/trrust_rawdata.human.tsv')
+res_dir = '/Users/hasanalanya/Desktop/MSc-Thesis/Main-Paper/ReporterTF/'
+clusters_all <- c("1","2","3","8","10","29","139")
+
+for(j in 1:length(clusters_all)){
+  res_dist_up = data.frame(matrix(ncol = 19, nrow = 0))
+  res_dist_down = data.frame(matrix(ncol = 19, nrow = 0))
+  res_no_dir = data.frame(matrix(ncol = 19, nrow = 0))
+  #fill = data.frame(matrix(ncol = 2, nrow = 0))
+    res_f = extractRes_TF(clusters_all[j])
+    if(length(res_f[[1]]) < 20){
+      print(paste0("Check ",j))
+      print(res_f[[1]])
+      if("group" %in% colnames(res_f[[1]])){
+        fill = data.frame(matrix(ncol = 2, nrow = dim(res_f[[1]])[1]))
+        colnames(fill) <- c("p..mix.dir.up.","p.adj..mix.dir.up.")
+        temp<- cbind(res_f[[1]][,1:13], fill, res_f[[1]][,14:19])
+      }else{
+        fill1 = data.frame(matrix(ncol = 2, nrow = dim(res_f[[1]])[1]))
+        colnames(fill1) <- c("p..mix.dir.up.","p.adj..mix.dir.up.")
+        temp<- cbind(res_f[[1]][,1:13], fill1, res_f[[1]][,14:18])
+        fill2 = data.frame(matrix(ncol = 1, nrow = dim(res_f[[1]])[1]))
+        colnames(fill2) <- c("group")
+        temp<- cbind(res_f[[1]], fill2)
+      }
+      res_dist_up = rbind(res_dist_up, temp)
+    }else{
+      res_dist_up = rbind(res_dist_up, res_f[[1]])
+    }
+     if(length(res_f[[2]]) < 20){
+      print(paste0("Check ",j))
+      print(colnames(res_f[[2]]))
+      
+      if("group" %in% colnames(res_f[[2]])){
+        fill = data.frame(matrix(ncol = 2, nrow = dim(res_f[[2]])[1]))
+        colnames(fill) <- c("p..mix.dir.up.","p.adj..mix.dir.up.")
+        temp<- cbind(res_f[[2]][,1:13], fill, res_f[[2]][,14:19])
+      }else{
+        fill1 = data.frame(matrix(ncol = 2, nrow = dim(res_f[[2]])[1]))
+        colnames(fill1) <- c("p..mix.dir.up.","p.adj..mix.dir.up.")
+        temp<- cbind(res_f[[2]][,1:13], fill1, res_f[[2]][,14:18])
+        fill2 = data.frame(matrix(ncol = 1, nrow = dim(res_f[[2]])[1]))
+        colnames(fill2) <- c("group")
+        temp<- cbind(res_f[[2]], fill2)
+      }
+    }else{
+      res_dist_down = rbind(res_dist_down, res_f[[2]])
+    }
+     if(length(res_f[[3]]) < 20){
+       print(paste0("Check ",i," ",j))
+      print(res_f[[3]])
+      if("group" %in% colnames(res_f[[3]])){
+        fill = data.frame(matrix(ncol = 2, nrow = dim(res_f[[3]])[1]))
+        colnames(fill) <- c("p..mix.dir.up.","p.adj..mix.dir.up.")
+        temp<- cbind(res_f[[3]][,1:13], fill, res_f[[3]][,14:19])
+      }else{
+        fill1 = data.frame(matrix(ncol = 2, nrow = dim(res_f[[3]])[1]))
+        colnames(fill1) <- c("p..mix.dir.up.","p.adj..mix.dir.up.")
+        temp<- cbind(res_f[[3]][,1:13], fill1, res_f[[3]][,14:18])
+        fill2 = data.frame(matrix(ncol = 1, nrow = dim(res_f[[3]])[1]))
+        colnames(fill2) <- c("group")
+        temp<- cbind(res_f[[3]], fill2)
+      }
+    }else{
+      res_no_dir = rbind(res_no_dir, res_f[[3]])
+    }
+  
+  res_com = rbind(res_dist_up,res_dist_down)
+  res_com = rbind(res_com,res_no_dir)  
+  res_com = res_com[!duplicated(res_com),]
+  
+  
+  reporter_TF <- union(union(unique(res_no_dir$Name),unique(res_dist_up$Name)),unique(res_dist_down$Name))
+  TRN_f <- TRN %>% filter(TF %in% reporter_TF)
+  
+  clusters <- read.table(paste0('/Users/hasanalanya/Desktop/MSc-Thesis/HypergeometricTest/Jamaica/Clusters/JamaicaCluster_',clusters_all[j],'.txt'), header = F, sep = "\t")
+  map_inform<-as.matrix(read.csv("/Users/hasanalanya/Desktop/CoexpressionNetwork/scripts/mart_export.txt",header=T,sep="\t"))
+  rownames(map_inform)<-map_inform[,1]
+  over_ensg<-as.matrix(intersect(clusters$V1,map_inform[,1]))
+  result<-unlist(as.data.frame(map_inform[over_ensg,2]) )
+  gene_list <- as.character(result) 
+
+  temp = TRN_f %>% filter(Target %in% gene_list)
+  
+  # Writing results to excel
+  list_of_datasets <- list("res_dist_up" = res_dist_up, "res_dist_down" = res_dist_down,"res_no_dir" = res_no_dir,"res_com" = res_com, "TFvsTarget" = temp)
+  write.xlsx(list_of_datasets, file = paste0(res_dir,'Summary_piano_cluster_',clusters_all[j],'.xlsx'))
+}
+```
+
